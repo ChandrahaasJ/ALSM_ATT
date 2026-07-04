@@ -1,2 +1,4 @@
 .env
 eras1.html
+__pycache__/
+*.egg-info/
