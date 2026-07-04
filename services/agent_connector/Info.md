@@ -1,0 +1,4 @@
+Inside this directory of the codebase, you have to create a functionality which lets you integrate coding agents like Codex or Cursor or Copilot into your harness. Here is what I meant: this part of the project should be capable of receiving an input from an external harness, and the input is going to be a PRD of a certain module which needs to be developed. This PRD includes all the requirements which are required for developing a module which has dependencies:
+- how the classes need to be structured
+- how many APIs have to be built
+- what database tables are either to be used or to be created and used  All of these things are included in the PRD itself. This connector module, which connects all the coding agents, is to take this PRD as input, execute this PRD, and send out an output, which is going to be a PR that is supposed to be built under this directory.
