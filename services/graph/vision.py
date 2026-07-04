@@ -152,8 +152,13 @@ class YOLODetector(Overlays):
     """
     YOLO model inference class for ONNX models
     """
-    def __init__(self,model_path):
-        self.runtime_session = ort.InferenceSession(model_path)
+    _GRAPH_DIR = os.path.dirname(os.path.abspath(__file__))
+    MODEL_PATH = os.path.join(_GRAPH_DIR, "models", "model_dynamic.onnx")
+
+    def __init__(self):
+        if not os.path.isfile(self.MODEL_PATH):
+            raise FileNotFoundError(f"Model not found: {self.MODEL_PATH}")
+        self.runtime_session = ort.InferenceSession(self.MODEL_PATH)
         self.input_name = self.runtime_session.get_inputs()[0].name
         
     def preprocess_image(self,image_path):
@@ -303,3 +308,7 @@ class YOLODetector(Overlays):
             logger.error(f"Error post-processing predictions: {e}")
             return []
     
+if __name__ == "__main__":
+    obj=YOLODetector()
+    predictions=obj.predict_with_log("C:/Users/lokes/OneDrive/Documents/codes/ALSM_ATT/githubUI.png")
+    print(predictions)
