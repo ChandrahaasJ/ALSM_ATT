@@ -182,9 +182,14 @@ class YOLODetector(Overlays):
         predictions = self.postprocess_predictions(outputs,original_size)
         return predictions
     
-    def predict_with_log(self,image_path):
+    def predict_with_log(self, image_path, output_path=None, output_dir=None):
         predictions = self.predict(image_path)
-        self.save_predicted_image(image_path,predictions)
+        self.save_predicted_image(
+            image_path,
+            predictions,
+            output_path=output_path,
+            output_dir=output_dir,
+        )
         return predictions
     
     def nms(self, boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5) -> List[int]:
