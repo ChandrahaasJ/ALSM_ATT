@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import tempfile
 from typing import Any, Dict, List, Sequence, Tuple
 
 from services.config import GRAPH_FILE_PREFIX, RECURSIVE_LIMIT
-from services.graph.utils.playwright_utils import PlaywrightUtils, Point
+from services.graph.utils.playwright_utils import NetworkLogEntry, PlaywrightUtils, Point
 from services.graph.vision import YOLODetector
 
 PointTuple = Tuple[float, float]
@@ -33,16 +34,24 @@ class DOMParser:
         self.nodes: List[Dict[str, Any]] = []
         self._node_counter = 0
         self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
+        self._seen_state_hashes: set[str] = set()
+        self._hash_to_node_id: Dict[str, str] = {}
+        self._cycles_detected = 0
+        self._depths_seen: List[int] = []
 
     def parse(self, base_url: str) -> str:
         self.nodes = []
         self._node_counter = 0
+        self._seen_state_hashes = set()
+        self._hash_to_node_id = {}
+        self._cycles_detected = 0
+        self._depths_seen = []
         self._temp_dir = tempfile.TemporaryDirectory(prefix="dom_parser_")
 
         try:
             self.pw.start()
             self.pw.open_url(base_url)
-            self._build_node(depth=1, source="root")
+            self._build_node(depth=1, source="root", network_logs=[])
             return self._save_graph()
         finally:
             if self._temp_dir is not None:
@@ -75,12 +84,52 @@ class DOMParser:
         with open(path, "rb") as screenshot_file:
             return base64.b64encode(screenshot_file.read()).decode("ascii")
 
-    def _build_node(self, depth: int, source: str) -> str:
+    @staticmethod
+    def _compute_state_hash(screenshot_path: str) -> tuple[str, str]:
+        b64 = DOMParser._encode_screenshot(screenshot_path)
+        state_hash = hashlib.sha256(b64.encode("ascii")).hexdigest()
+        return b64, state_hash
+
+    def _build_report(self) -> Dict[str, Any]:
+        total_edges = sum(len(node["child_nodes"]) for node in self.nodes)
+        leaf_nodes = sum(1 for node in self.nodes if not node["child_nodes"])
+        return {
+            "cycles_detected": self._cycles_detected,
+            "max_depth_traversed": max(self._depths_seen) if self._depths_seen else 0,
+            "min_depth_traversed": min(self._depths_seen) if self._depths_seen else 0,
+            "total_nodes": len(self.nodes),
+            "total_edges": total_edges,
+            "leaf_nodes": leaf_nodes,
+        }
+
+    def _probe_screenshot_path(self) -> str:
+        if self._temp_dir is None:
+            raise RuntimeError("Temporary directory is not initialized")
+        return os.path.join(self._temp_dir.name, f"probe_{self._node_counter + 1}.png")
+
+    def _build_node(
+        self,
+        depth: int,
+        source: str,
+        network_logs: List[NetworkLogEntry],
+    ) -> str:
+        probe_path = self._probe_screenshot_path()
+        self.pw.take_screenshot(probe_path)
+
+        b64_screenshot, state_hash = self._compute_state_hash(probe_path)
+        if state_hash in self._seen_state_hashes:
+            self._cycles_detected += 1
+            return self._hash_to_node_id[state_hash]
+
         node_id = self._next_id()
         screenshot_path = self._screenshot_path(node_id)
-        overlay_path = self._screenshot_path(node_id, overlay=True)
-        self.pw.take_screenshot(screenshot_path)
+        os.replace(probe_path, screenshot_path)
 
+        self._seen_state_hashes.add(state_hash)
+        self._hash_to_node_id[state_hash] = node_id
+        self._depths_seen.append(depth)
+
+        overlay_path = self._screenshot_path(node_id, overlay=True)
         predictions = self.detector.predict_with_log(
             screenshot_path,
             output_path=overlay_path,
@@ -89,8 +138,10 @@ class DOMParser:
         node: Dict[str, Any] = {
             "node_id": node_id,
             "node_description": f"depth {depth} state via {source}",
-            "state_screenshot": self._encode_screenshot(screenshot_path),
+            "state_screenshot": b64_screenshot,
             "state_screenshot_with_bounding_boxes": self._encode_screenshot(overlay_path),
+            "state_hash": state_hash,
+            "network_logs": network_logs,
             "child_nodes": [],
         }
         self.nodes.append(node)
@@ -100,10 +151,11 @@ class DOMParser:
 
         for index, prediction in enumerate(predictions):
             corners = self._bbox_to_corners(prediction["bounding_box_coordinates"])
-            self.pw.click_at_coordinates(corners)
+            transition_logs = self.pw.click_and_capture_network(corners)
             child_id = self._build_node(
                 depth=depth + 1,
                 source=f"{node_id} element {index + 1}",
+                network_logs=transition_logs,
             )
             node["child_nodes"].append(child_id)
             self.pw.go_back()
@@ -128,8 +180,12 @@ class DOMParser:
             f"{GRAPH_FILE_PREFIX}{graph_count}.json",
         )
         os.makedirs(self.tempdb_dir, exist_ok=True)
+        payload = {
+            "nodes": self.nodes,
+            "report": self._build_report(),
+        }
         with open(output_path, "w", encoding="utf-8") as graph_file:
-            json.dump(self.nodes, graph_file, indent=2)
+            json.dump(payload, graph_file, indent=2)
         return output_path
 
 
@@ -141,4 +197,14 @@ if __name__ == "__main__":
 
     parser = DOMParser()
     output = parser.parse(sys.argv[1])
+    with open(output, encoding="utf-8") as graph_file:
+        report = json.load(graph_file)["report"]
     print(f"Graph saved to: {output}")
+    print(
+        "Report: "
+        f"cycles={report['cycles_detected']}, "
+        f"depth={report['min_depth_traversed']}-{report['max_depth_traversed']}, "
+        f"nodes={report['total_nodes']}, "
+        f"edges={report['total_edges']}, "
+        f"leaves={report['leaf_nodes']}"
+    )
