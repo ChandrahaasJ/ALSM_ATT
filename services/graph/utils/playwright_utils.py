@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 from typing import Sequence, Tuple
 
-from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Error as PlaywrightError, Page, Playwright, sync_playwright
 
-from services.config import HEADLESS, NAV_TIMEOUT_MS
+from services.config import CLICK_DELAY_MS, HEADLESS, NAV_TIMEOUT_MS
 
 Point = Tuple[float, float]
+
+logger = logging.getLogger(__name__)
 
 
 class PlaywrightUtils:
@@ -59,13 +62,20 @@ class PlaywrightUtils:
             raise RuntimeError("PlaywrightUtils has not been started. Call start() first.")
         return self._page
 
+    def get_current_url(self) -> str:
+        return self.page.url
+
+    def get_page_title(self) -> str:
+        return self.page.title()
+
     def open_url(self, url: str) -> None:
         self.page.goto(url, wait_until="domcontentloaded")
 
     def click_at_coordinates(
         self,
         coords: Sequence[Point],
-    ) -> None:
+    ) -> bool:
+        """Click the center of a bounding box. Returns False if click fails."""
         if len(coords) != 4:
             raise ValueError("click_at_coordinates expects exactly four corner points")
 
@@ -73,11 +83,28 @@ class PlaywrightUtils:
         ys = [point[1] for point in coords]
         center_x = (min(xs) + max(xs)) / 2.0
         center_y = (min(ys) + max(ys)) / 2.0
-        self.page.mouse.click(center_x, center_y)
 
-    def go_back(self) -> None:
-        self.page.go_back(wait_until="domcontentloaded")
+        try:
+            self.page.mouse.click(center_x, center_y)
+            self.page.wait_for_timeout(CLICK_DELAY_MS)
+            return True
+        except PlaywrightError as exc:
+            logger.warning("Click at (%.1f, %.1f) failed: %s", center_x, center_y, exc)
+            return False
+
+    def go_back(self) -> bool:
+        """Navigate back. Returns False if history is empty or navigation fails."""
+        try:
+            self.page.go_back(wait_until="domcontentloaded")
+            return True
+        except PlaywrightError as exc:
+            logger.warning("go_back failed: %s", exc)
+            return False
 
     def take_screenshot(self, path: str) -> str:
         self.page.screenshot(path=path, full_page=True)
         return path
+
+    def capture_state_snapshot(self) -> tuple[str, str]:
+        """Return the current URL and page title."""
+        return self.get_current_url(), self.get_page_title()
