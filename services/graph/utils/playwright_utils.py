@@ -1,24 +1,34 @@
 from __future__ import annotations
 
-from typing import Sequence, Tuple
+import time
+from typing import Any, Dict, List, Sequence, Tuple
 
-from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Page, Playwright, Request, Response, sync_playwright
 
-from services.config import HEADLESS, NAV_TIMEOUT_MS
+from services.config import HEADLESS, NAV_TIMEOUT_MS, NETWORK_IDLE_TIMEOUT_MS
 
 Point = Tuple[float, float]
+NetworkLogEntry = Dict[str, Any]
 
 
 class PlaywrightUtils:
     """Playwright browser utilities for DOM indexing."""
 
-    def __init__(self, headless: bool = HEADLESS, nav_timeout_ms: int = NAV_TIMEOUT_MS) -> None:
+    def __init__(
+        self,
+        headless: bool = HEADLESS,
+        nav_timeout_ms: int = NAV_TIMEOUT_MS,
+        network_idle_timeout_ms: int = NETWORK_IDLE_TIMEOUT_MS,
+    ) -> None:
         self._headless = headless
         self._nav_timeout_ms = nav_timeout_ms
+        self._network_idle_timeout_ms = network_idle_timeout_ms
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
+        self._network_logs: List[NetworkLogEntry] = []
+        self._pending_requests: Dict[int, NetworkLogEntry] = {}
 
     def __enter__(self) -> "PlaywrightUtils":
         self.start()
@@ -32,6 +42,27 @@ class PlaywrightUtils:
             raise RuntimeError("Playwright has not been started")
         return self._playwright.firefox.launch(headless=self._headless)
 
+    def _on_request(self, request: Request) -> None:
+        entry: NetworkLogEntry = {
+            "url": request.url,
+            "method": request.method,
+            "status": None,
+            "resource_type": request.resource_type,
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        self._pending_requests[id(request)] = entry
+        self._network_logs.append(entry)
+
+    def _on_response(self, response: Response) -> None:
+        request = response.request
+        entry = self._pending_requests.get(id(request))
+        if entry is not None:
+            entry["status"] = response.status
+
+    def _register_network_listeners(self) -> None:
+        self.page.on("request", self._on_request)
+        self.page.on("response", self._on_response)
+
     def start(self) -> None:
         if self._page is not None:
             return
@@ -40,6 +71,7 @@ class PlaywrightUtils:
         self._context = self._browser.new_context()
         self._page = self._context.new_page()
         self._page.set_default_navigation_timeout(self._nav_timeout_ms)
+        self._register_network_listeners()
 
     def close(self) -> None:
         if self._context is not None:
@@ -52,6 +84,8 @@ class PlaywrightUtils:
             self._playwright.stop()
             self._playwright = None
         self._page = None
+        self._network_logs = []
+        self._pending_requests = {}
 
     @property
     def page(self) -> Page:
@@ -74,6 +108,30 @@ class PlaywrightUtils:
         center_x = (min(xs) + max(xs)) / 2.0
         center_y = (min(ys) + max(ys)) / 2.0
         self.page.mouse.click(center_x, center_y)
+
+    def clear_network_logs(self) -> None:
+        self._network_logs = []
+        self._pending_requests = {}
+
+    def drain_network_logs(self) -> List[NetworkLogEntry]:
+        logs = [dict(entry) for entry in self._network_logs]
+        self.clear_network_logs()
+        return logs
+
+    def click_and_capture_network(
+        self,
+        coords: Sequence[Point],
+    ) -> List[NetworkLogEntry]:
+        self.clear_network_logs()
+        self.click_at_coordinates(coords)
+        try:
+            self.page.wait_for_load_state(
+                "networkidle",
+                timeout=self._network_idle_timeout_ms,
+            )
+        except Exception:
+            pass
+        return self.drain_network_logs()
 
     def go_back(self) -> None:
         self.page.go_back(wait_until="domcontentloaded")
