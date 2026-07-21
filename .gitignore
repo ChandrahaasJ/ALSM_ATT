@@ -4,3 +4,4 @@ __pycache__/
 *.egg-info/
 tests/
 models/
+temp_db/
