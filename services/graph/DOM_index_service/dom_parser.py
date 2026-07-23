@@ -4,12 +4,15 @@ import base64
 import hashlib
 import json
 import os
+from platform import node
+from platform import node
 import tempfile
 from typing import Any, Dict, List, Sequence, Tuple
 
 from services.config import GRAPH_FILE_PREFIX, RECURSIVE_LIMIT
 from services.graph.utils.playwright_utils import NetworkLogEntry, PlaywrightUtils, Point
 from services.graph.vision import YOLODetector
+from services.graph.edge_semantics import build_edge_metadata
 
 PointTuple = Tuple[float, float]
 
@@ -51,7 +54,14 @@ class DOMParser:
         try:
             self.pw.start()
             self.pw.open_url(base_url)
-            self._build_node(depth=1, source="root", network_logs=[])
+            self._build_node(
+                depth=1,
+                source="root",
+                network_logs=[],
+                edge_action=None,
+                edge_click=None,
+                network_logs_raw_count=0,
+            )
             return self._save_graph()
         finally:
             if self._temp_dir is not None:
@@ -112,6 +122,9 @@ class DOMParser:
         depth: int,
         source: str,
         network_logs: List[NetworkLogEntry],
+        edge_action: dict[str, Any] | None = None,
+        edge_click: dict[str, Any] | None = None,
+        network_logs_raw_count: int = 0,
     ) -> str:
         probe_path = self._probe_screenshot_path()
         self.pw.take_screenshot(probe_path)
@@ -142,6 +155,9 @@ class DOMParser:
             "state_screenshot_with_bounding_boxes": self._encode_screenshot(overlay_path),
             "state_hash": state_hash,
             "network_logs": network_logs,
+            "network_logs_raw_count": network_logs_raw_count,
+            "edge_action": edge_action,
+            "edge_click": edge_click,
             "child_nodes": [],
         }
         self.nodes.append(node)
@@ -151,13 +167,28 @@ class DOMParser:
 
         for index, prediction in enumerate(predictions):
             corners = self._bbox_to_corners(prediction["bounding_box_coordinates"])
-            transition_logs = self.pw.click_and_capture_network(corners)
+            raw_logs = self.pw.click_and_capture_network(corners)
+
+            edge_meta = build_edge_metadata(
+                parent_id=node_id,
+                click_index=index + 1,
+                bbox=list(prediction["bounding_box_coordinates"]),
+                confidence=float(prediction.get("confidence", 0.0)),
+                raw_network_logs=raw_logs,
+            )
+
             child_id = self._build_node(
                 depth=depth + 1,
                 source=f"{node_id} element {index + 1}",
-                network_logs=transition_logs,
+                network_logs=edge_meta["network_logs"],
+                edge_action=edge_meta["edge_action"],
+                edge_click=edge_meta["edge_click"],
+                network_logs_raw_count=edge_meta["network_logs_raw_count"],
             )
-            node["child_nodes"].append(child_id)
+
+            if child_id not in node["child_nodes"]:
+                node["child_nodes"].append(child_id)
+
             self.pw.go_back()
 
         return node_id
