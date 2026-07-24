@@ -1,0 +1,155 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: linear-gradient(160deg, #0f172a 0%, #1e293b 45%, #334155 100%);
+  color: #f8fafc;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app {
+  min-height: 100vh;
+}
+
+.navbar {
+  display: flex;
+  align-items: center;
+  height: 56px;
+  padding: 0 1.5rem;
+  background: rgba(15, 23, 42, 0.85);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  backdrop-filter: blur(8px);
+}
+
+.navbar-home {
+  border: none;
+  background: transparent;
+  color: #e2e8f0;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.navbar-home:hover {
+  background: rgba(148, 163, 184, 0.15);
+}
+
+.navbar-home--active {
+  color: #94a3b8;
+  cursor: default;
+}
+
+.navbar-home--active:hover {
+  background: transparent;
+}
+
+.page {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem;
+  text-align: center;
+}
+
+.page-title {
+  margin: 0 0 0.5rem;
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.page-subtitle {
+  margin: 0 0 2.5rem;
+  color: #cbd5e1;
+}
+
+.city-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.btn {
+  border: none;
+  border-radius: 0.75rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.btn:hover {
+  transform: translateY(-2px);
+}
+
+.btn:active {
+  transform: translateY(0);
+}
+
+.btn-city {
+  padding: 1.5rem 2rem;
+  background: linear-gradient(135deg, #f97316, #ea580c);
+  color: #fff;
+  box-shadow: 0 10px 30px rgba(249, 115, 22, 0.25);
+}
+
+.btn-city:nth-child(2) {
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  box-shadow: 0 10px 30px rgba(34, 197, 94, 0.25);
+}
+
+.btn-primary {
+  margin-top: 1.5rem;
+  padding: 0.875rem 2rem;
+  background: #3b82f6;
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(59, 130, 246, 0.3);
+}
+
+.food-list {
+  list-style: none;
+  margin: 2rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.food-item {
+  padding: 1rem 1.25rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.75rem;
+  font-size: 1.125rem;
+}
+
+.payment-city {
+  margin: 0.5rem 0 0;
+  color: #cbd5e1;
+}
+
+.payment-price {
+  margin: 2rem 0 0;
+  font-size: 1.5rem;
+}
+
+.payment-price span {
+  color: #fbbf24;
+  font-weight: 700;
+}
+
+.payment-success {
+  margin: 0 0 1.5rem;
+  font-size: 1.25rem;
+  line-height: 1.6;
+}
