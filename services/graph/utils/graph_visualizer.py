@@ -17,7 +17,13 @@ class GraphVisualizer:
 
     def load(self) -> List[Dict[str, Any]]:
         with open(self.json_path, encoding="utf-8") as graph_file:
-            self.nodes = json.load(graph_file)
+            data = json.load(graph_file)
+        if isinstance(data, dict) and "nodes" in data:
+            self.nodes = data["nodes"]
+        elif isinstance(data, list):
+            self.nodes = data
+        else:
+            raise ValueError("Graph JSON must be a list of nodes or an object with a 'nodes' key")
         return self.nodes
 
     @staticmethod
