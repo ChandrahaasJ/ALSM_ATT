@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, Request, Response, sync_playwright
 
-from services.config import HEADLESS, NAV_TIMEOUT_MS, NETWORK_IDLE_TIMEOUT_MS
+from services.config import HEADLESS, NAV_TIMEOUT_MS, NETWORK_IDLE_TIMEOUT_MS, SLOW_MO_MS
 
 Point = Tuple[float, float]
 NetworkLogEntry = Dict[str, Any]
@@ -17,10 +17,12 @@ class PlaywrightUtils:
     def __init__(
         self,
         headless: bool = HEADLESS,
+        slow_mo_ms: int = SLOW_MO_MS,
         nav_timeout_ms: int = NAV_TIMEOUT_MS,
         network_idle_timeout_ms: int = NETWORK_IDLE_TIMEOUT_MS,
     ) -> None:
         self._headless = headless
+        self._slow_mo_ms = slow_mo_ms
         self._nav_timeout_ms = nav_timeout_ms
         self._network_idle_timeout_ms = network_idle_timeout_ms
         self._playwright: Playwright | None = None
@@ -29,6 +31,7 @@ class PlaywrightUtils:
         self._page: Page | None = None
         self._network_logs: List[NetworkLogEntry] = []
         self._pending_requests: Dict[int, NetworkLogEntry] = {}
+        self._trace_path: str | None = None
 
     def __enter__(self) -> "PlaywrightUtils":
         self.start()
@@ -40,7 +43,10 @@ class PlaywrightUtils:
     def _launch_firefox(self) -> Browser:
         if self._playwright is None:
             raise RuntimeError("Playwright has not been started")
-        return self._playwright.firefox.launch(headless=self._headless)
+        return self._playwright.firefox.launch(
+            headless=self._headless,
+            slow_mo=self._slow_mo_ms,
+        )
 
     def _on_request(self, request: Request) -> None:
         entry: NetworkLogEntry = {
@@ -63,19 +69,26 @@ class PlaywrightUtils:
         self.page.on("request", self._on_request)
         self.page.on("response", self._on_response)
 
-    def start(self) -> None:
+    def start(self, *, trace_path: str | None = None) -> None:
         if self._page is not None:
             return
         self._playwright = sync_playwright().start()
         self._browser = self._launch_firefox()
         self._context = self._browser.new_context()
+        self._trace_path = trace_path
+        if self._trace_path is not None:
+            self._context.tracing.start(screenshots=True, snapshots=True, sources=True)
         self._page = self._context.new_page()
         self._page.set_default_navigation_timeout(self._nav_timeout_ms)
         self._register_network_listeners()
 
     def close(self) -> None:
         if self._context is not None:
-            self._context.close()
+            try:
+                if self._trace_path is not None:
+                    self._context.tracing.stop(path=self._trace_path)
+            finally:
+                self._context.close()
             self._context = None
         if self._browser is not None:
             self._browser.close()
@@ -84,6 +97,7 @@ class PlaywrightUtils:
             self._playwright.stop()
             self._playwright = None
         self._page = None
+        self._trace_path = None
         self._network_logs = []
         self._pending_requests = {}
 

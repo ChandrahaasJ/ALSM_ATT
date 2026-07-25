@@ -8,7 +8,8 @@ from platform import node
 from platform import node
 import tempfile
 from typing import Any, Dict, List, Sequence, Tuple
-
+import logging
+from uuid import uuid4
 from services.config import GRAPH_FILE_PREFIX, RECURSIVE_LIMIT
 from services.graph.utils.playwright_utils import NetworkLogEntry, PlaywrightUtils, Point
 from services.graph.vision import YOLODetector
@@ -18,6 +19,9 @@ PointTuple = Tuple[float, float]
 
 _GRAPH_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPDB_DIR = os.path.join(_GRAPH_DIR, "temp_db")
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class DOMParser:
@@ -50,9 +54,14 @@ class DOMParser:
         self._cycles_detected = 0
         self._depths_seen = []
         self._temp_dir = tempfile.TemporaryDirectory(prefix="dom_parser_")
+        os.makedirs(self.tempdb_dir, exist_ok=True)
+        trace_path = os.path.join(self.tempdb_dir, f"trace_{uuid4().hex}.zip")
 
         try:
-            self.pw.start()
+            logger.info(f"Starting parser for {base_url}")
+            logger.info(f"Saving Playwright trace to {trace_path}")
+            self.pw.start(trace_path=trace_path)
+            logger.info(f"Opened browser")
             self.pw.open_url(base_url)
             self._build_node(
                 depth=1,
@@ -126,18 +135,26 @@ class DOMParser:
         edge_click: dict[str, Any] | None = None,
         network_logs_raw_count: int = 0,
     ) -> str:
+        logger.info(f"Building node at depth {depth} from {source}")
         probe_path = self._probe_screenshot_path()
+        logger.info(f"Taking screenshot at {probe_path}")
         self.pw.take_screenshot(probe_path)
 
+        logger.info(f"Computing state hash from b64 encoded screenshot")
         b64_screenshot, state_hash = self._compute_state_hash(probe_path)
+        logger.info(f"State hash: {state_hash}")
         if state_hash in self._seen_state_hashes:
+            logger.info(f"Cycle detected for state hash {state_hash}")
             self._cycles_detected += 1
+            logger.info(f"{self._cycles_detected} cycles detected")
             return self._hash_to_node_id[state_hash]
 
         node_id = self._next_id()
+        logger.info(f"Created a new Node with ID: {node_id}")
         screenshot_path = self._screenshot_path(node_id)
         os.replace(probe_path, screenshot_path)
 
+        logger.info(f"Adding state hash to seen state hashes")
         self._seen_state_hashes.add(state_hash)
         self._hash_to_node_id[state_hash] = node_id
         self._depths_seen.append(depth)
@@ -160,10 +177,11 @@ class DOMParser:
             "edge_click": edge_click,
             "child_nodes": [],
         }
+        logger.info(f"Created a node ,now appending it to the nodes list")
         self.nodes.append(node)
 
-        if depth >= self.recursive_limit:
-            return node_id
+        # if depth >= self.recursive_limit:
+        #     return node_id
 
         for index, prediction in enumerate(predictions):
             corners = self._bbox_to_corners(prediction["bounding_box_coordinates"])
