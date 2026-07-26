@@ -1,0 +1,14 @@
+# Optional offline FalkorDB for local development.
+# Same code path as the deployed instance — set FALKORDB_URL=falkor://localhost:6379
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    ports:
+      - "6379:6379"
+      - "3000:3000"
+    volumes:
+      - falkordb_data:/data
+    restart: unless-stopped
+
+volumes:
+  falkordb_data:

@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import json
-import os
-from platform import node
-from platform import node
-import tempfile
-from typing import Any, Dict, List, Sequence, Tuple
 import logging
+import os
+import tempfile
+from datetime import datetime, timezone
+from typing import Dict, List, Sequence, Tuple
 from uuid import uuid4
-from services.config import GRAPH_FILE_PREFIX, RECURSIVE_LIMIT
-from services.graph.utils.playwright_utils import NetworkLogEntry, PlaywrightUtils, Point
-from services.graph.vision import YOLODetector
+
+from services.config import Config
+from services.graph.utils.falkor_utils import build_graph_key, preflight
+from services.graph.db.graph_models import CrawlRun, StateNode, StateTransition
+from services.graph.db.graph_repository import GraphRepository
 from services.graph.edge_semantics import build_edge_metadata
+from services.graph.utils.playwright_utils import PlaywrightUtils
+from services.graph.vision import YOLODetector
+from services.storage.s3_service import ScreenshotStore, sha256_of
 
 PointTuple = Tuple[float, float]
 
@@ -25,58 +26,110 @@ logger = logging.getLogger(__name__)
 
 
 class DOMParser:
-    """Build a depth-limited UI state graph from a base URL."""
+    """Build a depth-limited UI state graph from a base URL and persist it to FalkorDB."""
 
     def __init__(
         self,
         playwright_utils: PlaywrightUtils | None = None,
         detector: YOLODetector | None = None,
-        recursive_limit: int = RECURSIVE_LIMIT,
+        recursive_limit: int = Config.recursive_limit,
         tempdb_dir: str | None = None,
+        screenshot_store: ScreenshotStore | None = None,
+        repository: GraphRepository | None = None,
     ) -> None:
         self.pw = playwright_utils or PlaywrightUtils()
         self.detector = detector or YOLODetector()
         self.recursive_limit = recursive_limit
         self.tempdb_dir = tempdb_dir or TEMPDB_DIR
-        self.nodes: List[Dict[str, Any]] = []
+        self._screenshot_store = screenshot_store
+        self._repository_override = repository
+        self._repo: GraphRepository | None = None
         self._node_counter = 0
         self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._seen_state_hashes: set[str] = set()
         self._hash_to_node_id: Dict[str, str] = {}
         self._cycles_detected = 0
         self._depths_seen: List[int] = []
+        self._total_edges = 0
+        self._child_counts: Dict[str, int] = {}
 
-    def parse(self, base_url: str) -> str:
-        self.nodes = []
+    @property
+    def screenshot_store(self) -> ScreenshotStore:
+        if self._screenshot_store is None:
+            self._screenshot_store = ScreenshotStore()
+        return self._screenshot_store
+
+    def parse(self, base_url: str, graph_name: str) -> str:
+        """
+        Crawl ``base_url`` and persist the UI state graph under a new FalkorDB key.
+
+        ``graph_name`` is required. Returns the FalkorDB graph key
+        ``{sanitized_name}_{uuid}``.
+        """
+        if not graph_name or not str(graph_name).strip():
+            raise ValueError("graph_name is required")
+
+        #check if the connection to the database is working
+        preflight()
+        #build the graph key
+        logger.info("Building graph key for %s", graph_name)
+        graph_key, sanitized_name, run_id = build_graph_key(graph_name)
+        self._repo = self._repository_override or GraphRepository(graph_key)
+        self._repo.ensure_schema()
+
         self._node_counter = 0
         self._seen_state_hashes = set()
         self._hash_to_node_id = {}
         self._cycles_detected = 0
         self._depths_seen = []
+        self._total_edges = 0
+        self._child_counts = {}
         self._temp_dir = tempfile.TemporaryDirectory(prefix="dom_parser_")
         os.makedirs(self.tempdb_dir, exist_ok=True)
         trace_path = os.path.join(self.tempdb_dir, f"trace_{uuid4().hex}.zip")
+        started_at = datetime.now(timezone.utc).isoformat()
 
         try:
-            logger.info(f"Starting parser for {base_url}")
-            logger.info(f"Saving Playwright trace to {trace_path}")
-            self.pw.start(trace_path=trace_path)
-            logger.info(f"Opened browser")
-            self.pw.open_url(base_url)
-            self._build_node(
-                depth=1,
-                source="root",
-                network_logs=[],
-                edge_action=None,
-                edge_click=None,
-                network_logs_raw_count=0,
+            logger.info("Starting parser for %s (graph_name=%s)", base_url, sanitized_name)
+            logger.info("FalkorDB graph key: %s", graph_key)
+            logger.info("Saving Playwright trace to %s", trace_path)
+
+            crawl = CrawlRun(
+                graph_name=sanitized_name,
+                run_id=run_id,
+                graph_key=graph_key,
+                base_url=base_url,
+                recursive_limit=self.recursive_limit,
+                started_at=started_at,
             )
-            return self._save_graph()
+            self._repo.create_crawl(crawl)
+
+            self.pw.start(trace_path=trace_path)
+            logger.info("Opened browser")
+            self.pw.open_url(base_url)
+
+            root_id = self._build_node(depth=1, source="root")
+            self._repo.link_root(root_id)
+
+            report = self._build_report()
+            report["finished_at"] = datetime.now(timezone.utc).isoformat()
+            self._repo.finalize_crawl(report)
+
+            logger.info(
+                "Crawl complete: key=%s cycles=%s nodes=%s edges=%s leaves=%s",
+                graph_key,
+                report["cycles_detected"],
+                report["total_nodes"],
+                report["total_edges"],
+                report["leaf_nodes"],
+            )
+            return graph_key
         finally:
             if self._temp_dir is not None:
                 self._temp_dir.cleanup()
                 self._temp_dir = None
             self.pw.close()
+            self._repo = None
 
     def _next_id(self) -> str:
         self._node_counter += 1
@@ -98,26 +151,19 @@ class DOMParser:
             (float(x2), float(y2)),
         ]
 
-    @staticmethod
-    def _encode_screenshot(path: str) -> str:
-        with open(path, "rb") as screenshot_file:
-            return base64.b64encode(screenshot_file.read()).decode("ascii")
-
-    @staticmethod
-    def _compute_state_hash(screenshot_path: str) -> tuple[str, str]:
-        b64 = DOMParser._encode_screenshot(screenshot_path)
-        state_hash = hashlib.sha256(b64.encode("ascii")).hexdigest()
-        return b64, state_hash
-
-    def _build_report(self) -> Dict[str, Any]:
-        total_edges = sum(len(node["child_nodes"]) for node in self.nodes)
-        leaf_nodes = sum(1 for node in self.nodes if not node["child_nodes"])
+    def _build_report(self) -> dict:
+        total_nodes = self._node_counter
+        leaf_nodes = sum(
+            1
+            for node_id in (f"node_{i}" for i in range(1, total_nodes + 1))
+            if self._child_counts.get(node_id, 0) == 0
+        )
         return {
             "cycles_detected": self._cycles_detected,
             "max_depth_traversed": max(self._depths_seen) if self._depths_seen else 0,
             "min_depth_traversed": min(self._depths_seen) if self._depths_seen else 0,
-            "total_nodes": len(self.nodes),
-            "total_edges": total_edges,
+            "total_nodes": total_nodes,
+            "total_edges": self._total_edges,
             "leaf_nodes": leaf_nodes,
         }
 
@@ -126,38 +172,32 @@ class DOMParser:
             raise RuntimeError("Temporary directory is not initialized")
         return os.path.join(self._temp_dir.name, f"probe_{self._node_counter + 1}.png")
 
-    def _build_node(
-        self,
-        depth: int,
-        source: str,
-        network_logs: List[NetworkLogEntry],
-        edge_action: dict[str, Any] | None = None,
-        edge_click: dict[str, Any] | None = None,
-        network_logs_raw_count: int = 0,
-    ) -> str:
-        logger.info(f"Building node at depth {depth} from {source}")
+    def _build_node(self, depth: int, source: str) -> str:
+        if self._repo is None:
+            raise RuntimeError("GraphRepository is not initialized")
+
+        logger.info("Building node at depth %s from %s", depth, source)
         probe_path = self._probe_screenshot_path()
-        logger.info(f"Taking screenshot at {probe_path}")
+        logger.info("Taking screenshot at %s", probe_path)
         self.pw.take_screenshot(probe_path)
 
-        logger.info(f"Computing state hash from b64 encoded screenshot")
-        b64_screenshot, state_hash = self._compute_state_hash(probe_path)
-        logger.info(f"State hash: {state_hash}")
+        state_hash = sha256_of(probe_path)
+        logger.info("State hash: %s", state_hash)
         if state_hash in self._seen_state_hashes:
-            logger.info(f"Cycle detected for state hash {state_hash}")
+            logger.info("Cycle detected for state hash %s", state_hash)
             self._cycles_detected += 1
-            logger.info(f"{self._cycles_detected} cycles detected")
+            logger.info("%s cycles detected", self._cycles_detected)
             return self._hash_to_node_id[state_hash]
 
         node_id = self._next_id()
-        logger.info(f"Created a new Node with ID: {node_id}")
+        logger.info("Created a new Node with ID: %s", node_id)
         screenshot_path = self._screenshot_path(node_id)
         os.replace(probe_path, screenshot_path)
 
-        logger.info(f"Adding state hash to seen state hashes")
         self._seen_state_hashes.add(state_hash)
         self._hash_to_node_id[state_hash] = node_id
         self._depths_seen.append(depth)
+        self._child_counts[node_id] = 0
 
         overlay_path = self._screenshot_path(node_id, overlay=True)
         predictions = self.detector.predict_with_log(
@@ -165,95 +205,86 @@ class DOMParser:
             output_path=overlay_path,
         )
 
-        node: Dict[str, Any] = {
-            "node_id": node_id,
-            "node_description": f"depth {depth} state via {source}",
-            "state_screenshot": b64_screenshot,
-            "state_screenshot_with_bounding_boxes": self._encode_screenshot(overlay_path),
-            "state_hash": state_hash,
-            "network_logs": network_logs,
-            "network_logs_raw_count": network_logs_raw_count,
-            "edge_action": edge_action,
-            "edge_click": edge_click,
-            "child_nodes": [],
-        }
-        logger.info(f"Created a node ,now appending it to the nodes list")
-        self.nodes.append(node)
+        screenshot_uri = self.screenshot_store.upload(
+            screenshot_path,
+            content_type="image/png",
+        )
+        overlay_uri = self.screenshot_store.upload(
+            overlay_path,
+            content_type="image/jpeg",
+        )
+
+        state = StateNode(
+            node_id=node_id,
+            node_description=f"depth {depth} state via {source}",
+            state_hash=state_hash,
+            depth=depth,
+            screenshot_uri=screenshot_uri,
+            overlay_uri=overlay_uri,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self._repo.merge_state(state)
+        logger.info("Persisted state %s to FalkorDB", node_id)
 
         # if depth >= self.recursive_limit:
         #     return node_id
 
+        pending_transitions: list[StateTransition] = []
         for index, prediction in enumerate(predictions):
             corners = self._bbox_to_corners(prediction["bounding_box_coordinates"])
             raw_logs = self.pw.click_and_capture_network(corners)
 
-            edge_meta = build_edge_metadata(
+            child_id = self._build_node(
+                depth=depth + 1,
+                source=f"{node_id} element {index + 1}",
+            )
+
+            transition = build_edge_metadata(
                 parent_id=node_id,
+                child_id=child_id,
                 click_index=index + 1,
                 bbox=list(prediction["bounding_box_coordinates"]),
                 confidence=float(prediction.get("confidence", 0.0)),
                 raw_network_logs=raw_logs,
             )
-
-            child_id = self._build_node(
-                depth=depth + 1,
-                source=f"{node_id} element {index + 1}",
-                network_logs=edge_meta["network_logs"],
-                edge_action=edge_meta["edge_action"],
-                edge_click=edge_meta["edge_click"],
-                network_logs_raw_count=edge_meta["network_logs_raw_count"],
-            )
-
-            if child_id not in node["child_nodes"]:
-                node["child_nodes"].append(child_id)
+            pending_transitions.append(transition)
+            self._child_counts[node_id] = self._child_counts.get(node_id, 0) + 1
 
             self.pw.go_back()
 
+        if pending_transitions:
+            self._repo.add_transitions(pending_transitions)
+            self._repo.add_network_logs(pending_transitions)
+            self._total_edges += len(pending_transitions)
+            logger.info(
+                "Flushed %s transitions from %s",
+                len(pending_transitions),
+                node_id,
+            )
+
         return node_id
-
-    def _next_graph_count(self) -> int:
-        os.makedirs(self.tempdb_dir, exist_ok=True)
-        highest = 0
-        for filename in os.listdir(self.tempdb_dir):
-            if not filename.startswith(GRAPH_FILE_PREFIX) or not filename.endswith(".json"):
-                continue
-            count_part = filename[len(GRAPH_FILE_PREFIX) : -len(".json")]
-            if count_part.isdigit():
-                highest = max(highest, int(count_part))
-        return highest + 1
-
-    def _save_graph(self) -> str:
-        graph_count = self._next_graph_count()
-        output_path = os.path.join(
-            self.tempdb_dir,
-            f"{GRAPH_FILE_PREFIX}{graph_count}.json",
-        )
-        os.makedirs(self.tempdb_dir, exist_ok=True)
-        payload = {
-            "nodes": self.nodes,
-            "report": self._build_report(),
-        }
-        with open(output_path, "w", encoding="utf-8") as graph_file:
-            json.dump(payload, graph_file, indent=2)
-        return output_path
 
 
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) < 2:
-        raise SystemExit("Usage: uv run python -m services.graph.DOM_index_service.dom_parser <url>")
+    if len(sys.argv) < 3:
+        raise SystemExit(
+            "Usage: uv run python -m services.graph.DOM_index_service.dom_parser "
+            "<url> <graph_name>"
+        )
 
     parser = DOMParser()
-    output = parser.parse(sys.argv[1])
-    with open(output, encoding="utf-8") as graph_file:
-        report = json.load(graph_file)["report"]
-    print(f"Graph saved to: {output}")
+    key = parser.parse(sys.argv[1], graph_name=sys.argv[2])
+    from services.graph.db.graph_repository import GraphRepository
+
+    report = GraphRepository(key).crawl_report() or {}
+    print(f"Graph key: {key}")
     print(
         "Report: "
-        f"cycles={report['cycles_detected']}, "
-        f"depth={report['min_depth_traversed']}-{report['max_depth_traversed']}, "
-        f"nodes={report['total_nodes']}, "
-        f"edges={report['total_edges']}, "
-        f"leaves={report['leaf_nodes']}"
+        f"cycles={report.get('cycles_detected')}, "
+        f"depth={report.get('min_depth_traversed')}-{report.get('max_depth_traversed')}, "
+        f"nodes={report.get('total_nodes')}, "
+        f"edges={report.get('total_edges')}, "
+        f"leaves={report.get('leaf_nodes')}"
     )

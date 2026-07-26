@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
+from uuid import uuid4
+
+from services.graph.db.graph_models import EdgeAction, NetworkLog, StateTransition
 
 NetworkLogEntry = dict[str, Any]
-EdgeAction = dict[str, Any]
-EdgeMetadata = dict[str, Any]
 
 NOISE_RESOURCE_TYPES: frozenset[str] = frozenset({
     "script",
@@ -81,6 +83,17 @@ def _score_log(entry: NetworkLogEntry) -> tuple[int, int, int]:
     )
 
 
+def _to_network_log(entry: NetworkLogEntry) -> NetworkLog:
+    status = entry.get("status")
+    return NetworkLog(
+        url=str(entry.get("url") or ""),
+        method=str(entry.get("method") or "GET").upper(),
+        status=int(status) if status is not None else None,
+        resource_type=str(entry.get("resource_type") or "").lower(),
+        timestamp_ms=int(entry.get("timestamp_ms") or 0),
+    )
+
+
 def derive_edge_action(filtered_logs: list[NetworkLogEntry]) -> EdgeAction | None:
     """Pick the single best representative action from filtered network logs."""
     if not filtered_logs:
@@ -90,37 +103,39 @@ def derive_edge_action(filtered_logs: list[NetworkLogEntry]) -> EdgeAction | Non
     method = (best.get("method") or "GET").upper()
     url = best.get("url") or ""
     resource_type = (best.get("resource_type") or "").lower()
+    status = best.get("status")
 
-    return {
-        "kind": "api_call",
-        "method": method,
-        "path": normalize_url(url),
-        "url": url,
-        "status": best.get("status"),
-        "resource_type": resource_type,
-    }
+    return EdgeAction(
+        kind="api_call",
+        method=method,
+        path=normalize_url(url),
+        url=url,
+        status=int(status) if status is not None else None,
+        resource_type=resource_type,
+    )
 
 
 def build_edge_metadata(
     *,
     parent_id: str,
+    child_id: str,
     click_index: int,
     bbox: list[int],
     confidence: float,
     raw_network_logs: list[NetworkLogEntry],
-) -> EdgeMetadata:
-    """Build the structured edge payload for one parent→child transition."""
+) -> StateTransition:
+    """Build a StateTransition for one parent→child click."""
     filtered_logs = filter_network_logs(raw_network_logs)
-    edge_action = derive_edge_action(filtered_logs)
-
-    return {
-        "edge_click": {
-            "parent_id": parent_id,
-            "element_index": click_index,
-            "bbox": bbox,
-            "confidence": confidence,
-        },
-        "network_logs": filtered_logs,
-        "network_logs_raw_count": len(raw_network_logs),
-        "edge_action": edge_action,
-    }
+    action = derive_edge_action(filtered_logs)
+    return StateTransition(
+        edge_id=uuid4().hex,
+        parent_id=parent_id,
+        child_id=child_id,
+        element_index=click_index,
+        bbox=list(bbox),
+        confidence=float(confidence),
+        action=action,
+        network_logs=[_to_network_log(entry) for entry in filtered_logs],
+        network_logs_raw_count=len(raw_network_logs),
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )

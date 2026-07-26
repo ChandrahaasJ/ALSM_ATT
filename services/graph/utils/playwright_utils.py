@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, Request, Response, sync_playwright
 
-from services.config import HEADLESS, NAV_TIMEOUT_MS, NETWORK_IDLE_TIMEOUT_MS, SLOW_MO_MS
+from services.config import Config
 
 Point = Tuple[float, float]
 NetworkLogEntry = Dict[str, Any]
@@ -16,10 +16,10 @@ class PlaywrightUtils:
 
     def __init__(
         self,
-        headless: bool = HEADLESS,
-        slow_mo_ms: int = SLOW_MO_MS,
-        nav_timeout_ms: int = NAV_TIMEOUT_MS,
-        network_idle_timeout_ms: int = NETWORK_IDLE_TIMEOUT_MS,
+        headless: bool = Config.headless,
+        slow_mo_ms: int = Config.slow_mo_ms,
+        nav_timeout_ms: int = Config.nav_timeout_ms,
+        network_idle_timeout_ms: int = Config.network_idle_timeout_ms,
     ) -> None:
         self._headless = headless
         self._slow_mo_ms = slow_mo_ms
