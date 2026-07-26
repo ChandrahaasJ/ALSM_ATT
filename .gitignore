@@ -6,3 +6,4 @@ tests/
 models/
 temp_db/
 .vite/
+test.ipynb
