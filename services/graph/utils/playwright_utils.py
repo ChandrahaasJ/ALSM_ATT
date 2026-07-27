@@ -47,16 +47,16 @@ _CSS_COLLECTOR_JS = """
         }
 
         const parts = [];
-        const imported = [];
+        const importedSheets = [];
         for (const rule of Array.from(rules)) {
             parts.push(rule.cssText);
             if (rule.styleSheet) {
-                imported.push(rule.styleSheet);
+                importedSheets.push(rule.styleSheet);
             }
         }
         blocks.push({ source: href || origin, css: parts.join("\\n") });
-        for (const sheet of imported) {
-            collectSheet(sheet, href || origin);
+        for (const importedSheet of importedSheets) {
+            collectSheet(importedSheet, href || origin);
         }
     };
 
