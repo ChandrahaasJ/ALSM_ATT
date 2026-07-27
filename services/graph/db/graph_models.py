@@ -101,6 +101,8 @@ class StateTransition:
 
 @dataclass
 class StateNode:
+    """One captured UI state; ``skeleton`` holds its HTML and ``styles`` its CSS."""
+
     node_id: str
     node_description: str
     state_hash: str
@@ -108,6 +110,8 @@ class StateNode:
     screenshot_uri: str
     overlay_uri: str
     created_at: str
+    skeleton: str = ""
+    styles: str = ""
 
     def to_properties(self) -> dict[str, Any]:
         return _drop_none(
@@ -119,6 +123,8 @@ class StateNode:
                 "screenshot_uri": self.screenshot_uri,
                 "overlay_uri": self.overlay_uri,
                 "created_at": self.created_at,
+                "skeleton": self.skeleton,
+                "styles": self.styles,
             }
         )
 

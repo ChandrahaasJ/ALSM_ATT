@@ -68,9 +68,10 @@ Returns a graph key like `test_fe2_550e8400-e29b-41d4-a716-446655440000`.
 Each run:
 
 1. Takes screenshots via Playwright
-2. Detects clickable elements (YOLO/ONNX)
-3. Uploads screenshots to S3 (content-addressed `s3://` URIs)
-4. Writes `:State` nodes and `:TRANSITIONS_TO` relationships (click + network summary on the edge; full logs as `:NetworkLog` nodes)
+2. Records each state's DOM — HTML into `State.skeleton`, CSS into `State.styles` (set `CAPTURE_DOM=false` to skip)
+3. Detects clickable elements (YOLO/ONNX)
+4. Uploads screenshots to S3 (content-addressed `s3://` URIs)
+5. Writes `:State` nodes and `:TRANSITIONS_TO` relationships (click + network summary on the edge; full logs as `:NetworkLog` nodes)
 
 ## Read helpers
 
