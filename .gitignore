@@ -4,4 +4,7 @@ __pycache__/
 *.egg-info/
 tests/
 models/
+temp_db/
+.vite/
+test.ipynb
 node_modules/
