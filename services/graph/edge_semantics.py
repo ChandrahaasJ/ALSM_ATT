@@ -123,8 +123,16 @@ def build_edge_metadata(
     bbox: list[int],
     confidence: float,
     raw_network_logs: list[NetworkLogEntry],
+    selector: str | None = None,
+    element_tag: str | None = None,
+    element_text: str | None = None,
+    element_type: str | None = None,
+    href: str | None = None,
+    action_kind: str = "click",
+    form_values: str | None = None,
+    detection_source: str = "dom",
 ) -> StateTransition:
-    """Build a StateTransition for one parent→child click."""
+    """Build a StateTransition for one parent→child interaction."""
     filtered_logs = filter_network_logs(raw_network_logs)
     action = derive_edge_action(filtered_logs)
     return StateTransition(
@@ -138,4 +146,12 @@ def build_edge_metadata(
         network_logs=[_to_network_log(entry) for entry in filtered_logs],
         network_logs_raw_count=len(raw_network_logs),
         created_at=datetime.now(timezone.utc).isoformat(),
+        selector=selector,
+        element_tag=element_tag,
+        element_text=element_text,
+        element_type=element_type,
+        href=href,
+        action_kind=action_kind,
+        form_values=form_values,
+        detection_source=detection_source,
     )

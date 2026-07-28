@@ -16,6 +16,11 @@ def _env_opt(key: str) -> str | None:
     return value or None
 
 
+def _env_list(key: str, default: str) -> tuple[str, ...]:
+    raw = os.getenv(key, default)
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
 class Config:
     """Application settings loaded from environment / ``.env`` at import time."""
 
@@ -24,6 +29,24 @@ class Config:
     slow_mo_ms: int = int(os.getenv("SLOW_MO_MS", "400"))
     nav_timeout_ms: int = int(os.getenv("NAV_TIMEOUT_MS", "15000"))
     network_idle_timeout_ms: int = int(os.getenv("NETWORK_IDLE_TIMEOUT_MS", "5000"))
+    action_timeout_ms: int = int(os.getenv("ACTION_TIMEOUT_MS", "5000"))
+
+    # DOM-based detection / interaction policy
+    max_elements_per_state: int = int(os.getenv("MAX_ELEMENTS_PER_STATE", "15"))
+    max_sibling_group: int = int(os.getenv("MAX_SIBLING_GROUP", "5"))
+    same_origin_only: bool = _env_bool("SAME_ORIGIN_ONLY", "true")
+    vision_fallback: bool = _env_bool("VISION_FALLBACK", "true")
+    deny_text_patterns: tuple[str, ...] = _env_list(
+        "DENY_TEXT_PATTERNS", "logout,log out,sign out,delete account"
+    )
+
+    # Form handling
+    form_dummy_text: str = os.getenv("FORM_DUMMY_TEXT", "Automated crawler input")
+    form_dummy_email: str = os.getenv("FORM_DUMMY_EMAIL", "qa.crawler@example.com")
+    form_dummy_number: str = os.getenv("FORM_DUMMY_NUMBER", "42")
+    form_dummy_phone: str = os.getenv("FORM_DUMMY_PHONE", "5551234567")
+    form_dummy_date: str = os.getenv("FORM_DUMMY_DATE", "2026-01-15")
+    max_form_combinations: int = int(os.getenv("MAX_FORM_COMBINATIONS", "24"))
 
     falkordb_url: str | None = _env_opt("FALKORDB_URL")
     falkordb_host: str = os.getenv("FALKORDB_HOST", "localhost")

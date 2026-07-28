@@ -5,7 +5,7 @@ A Python 3.12 project managed with [uv](https://docs.astral.sh/uv/). Dependencie
 The codebase includes:
 
 - **`app/`** — FastAPI HTTP server (stub)
-- **`services/graph/`** — UI state graph crawler (Playwright + YOLO), FalkorDB persistence, vision utilities
+- **`services/graph/`** — UI state graph crawler (Playwright DOM detection, optional YOLO backup), FalkorDB persistence, vision utilities
 - **`services/storage/`** — S3 screenshot store
 - **`services/agent_connector/`** — planned integration layer for coding agents
 
@@ -67,10 +67,12 @@ Returns a graph key like `test_fe2_550e8400-e29b-41d4-a716-446655440000`.
 
 Each run:
 
-1. Takes screenshots via Playwright
-2. Detects clickable elements (YOLO/ONNX)
-3. Uploads screenshots to S3 (content-addressed `s3://` URIs)
-4. Writes `:State` nodes and `:TRANSITIONS_TO` relationships (click + network summary on the edge; full logs as `:NetworkLog` nodes)
+1. Takes screenshots via Playwright (screenshot SHA-256 stays the state hash / cycle detector)
+2. Detects interactive elements from the **live DOM** (allow/deny interaction policy, replay-stable CSS selectors); the YOLO/ONNX model under `services/graph/models/` is an optional backup used only when DOM detection finds nothing (`VISION_FALLBACK=true`)
+3. Drives forms automatically: text fields get dummy values (`FORM_DUMMY_*`), and every dropdown/radio combination is submitted and recorded as its own `form_submit` edge (capped by `MAX_FORM_COMBINATIONS`)
+4. Backtracks between states with **StateMemory** — the action path from the base URL is replayed and verified by state hash (no `page.go_back()`); irreproducible states are flagged `unstable`
+5. Uploads screenshots to S3 (content-addressed `s3://` URIs)
+6. Writes `:State` nodes and `:TRANSITIONS_TO` relationships (selector, element text, action kind, form values + network summary on the edge; full logs as `:NetworkLog` nodes)
 
 ## Read helpers
 
@@ -103,8 +105,8 @@ ALSM_ATT/
 │   ├── storage/              # S3 screenshot store
 │   ├── graph/
 │   │   ├── db/               # FalkorDB client, models, repository
-│   │   ├── DOM_index_service/# DOMParser crawler
-│   │   ├── utils/            # Playwright + falkor_utils
+│   │   ├── DOM_index_service/# DOMParser crawler + StateMemory backtracking
+│   │   ├── utils/            # Playwright (DOM collector + actions) + falkor_utils
 │   │   └── edge_semantics.py # Click → StateTransition builder
 │   └── agent_connector/      # Agent integration (planned)
 ├── docker-compose.yml        # Optional local FalkorDB

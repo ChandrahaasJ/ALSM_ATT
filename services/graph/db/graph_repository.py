@@ -63,6 +63,13 @@ class GraphRepository:
             {"graph_key": self.graph_key, "node_id": root_node_id},
         )
 
+    def set_state_unstable(self, node_id: str) -> None:
+        """Flag a state whose replay-based restore could not be verified."""
+        self.graph.query(
+            "MATCH (s:State {node_id: $node_id}) SET s.unstable = true",
+            {"node_id": node_id},
+        )
+
     def merge_state(self, state: StateNode) -> None:
         props = state.to_properties()
         self.graph.query(

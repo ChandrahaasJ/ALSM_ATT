@@ -68,6 +68,15 @@ class StateTransition:
     network_logs: list[NetworkLog] = field(default_factory=list)
     network_logs_raw_count: int = 0
     created_at: str = ""
+    # DOM-based interaction metadata
+    selector: str | None = None
+    element_tag: str | None = None
+    element_text: str | None = None
+    element_type: str | None = None
+    href: str | None = None
+    action_kind: str = "click"  # "click" | "form_submit"
+    form_values: str | None = None  # JSON map of field label -> submitted value
+    detection_source: str = "dom"  # "dom" | "vision"
 
     @property
     def network_logs_count(self) -> int:
@@ -83,6 +92,14 @@ class StateTransition:
             "network_logs_raw_count": int(self.network_logs_raw_count),
             "network_logs_count": self.network_logs_count,
             "created_at": self.created_at,
+            "selector": self.selector,
+            "element_tag": self.element_tag,
+            "element_text": self.element_text,
+            "element_type": self.element_type,
+            "href": self.href,
+            "action_kind": self.action_kind,
+            "form_values": self.form_values,
+            "detection_source": self.detection_source,
         }
         if self.action is not None:
             props.update(self.action.to_flat_properties())
@@ -108,6 +125,8 @@ class StateNode:
     screenshot_uri: str
     overlay_uri: str
     created_at: str
+    # Set when replay-based backtracking could not reproduce this state.
+    unstable: bool | None = None
 
     def to_properties(self) -> dict[str, Any]:
         return _drop_none(
@@ -119,6 +138,7 @@ class StateNode:
                 "screenshot_uri": self.screenshot_uri,
                 "overlay_uri": self.overlay_uri,
                 "created_at": self.created_at,
+                "unstable": self.unstable,
             }
         )
 
