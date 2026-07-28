@@ -7,3 +7,4 @@ models/
 temp_db/
 .vite/
 test.ipynb
+node_modules/
