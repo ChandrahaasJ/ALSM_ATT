@@ -12,7 +12,7 @@ from services.graph.utils.falkor_utils import build_graph_key, preflight
 from services.graph.db.graph_models import CrawlRun, StateNode, StateTransition
 from services.graph.db.graph_repository import GraphRepository
 from services.graph.edge_semantics import build_edge_metadata
-from services.graph.utils.playwright_utils import PlaywrightUtils
+from services.graph.utils.playwright_utils import DomSnapshot, PlaywrightUtils
 from services.graph.vision import YOLODetector
 from services.storage.s3_service import ScreenshotStore, sha256_of
 
@@ -36,10 +36,12 @@ class DOMParser:
         tempdb_dir: str | None = None,
         screenshot_store: ScreenshotStore | None = None,
         repository: GraphRepository | None = None,
+        capture_dom: bool = Config.capture_dom,
     ) -> None:
         self.pw = playwright_utils or PlaywrightUtils()
         self.detector = detector or YOLODetector()
         self.recursive_limit = recursive_limit
+        self.capture_dom = capture_dom
         self.tempdb_dir = tempdb_dir or TEMPDB_DIR
         self._screenshot_store = screenshot_store
         self._repository_override = repository
@@ -172,6 +174,22 @@ class DOMParser:
             raise RuntimeError("Temporary directory is not initialized")
         return os.path.join(self._temp_dir.name, f"probe_{self._node_counter + 1}.png")
 
+    def _capture_dom(self) -> DomSnapshot | None:
+        """Record the page's HTML/CSS; a failure must not abort the crawl."""
+        if not self.capture_dom:
+            return None
+        try:
+            snapshot = self.pw.capture_dom()
+        except Exception:
+            logger.warning("DOM capture failed, storing empty skeleton/styles", exc_info=True)
+            return None
+        logger.info(
+            "Captured DOM: %s bytes of HTML, %s bytes of CSS",
+            len(snapshot.html),
+            len(snapshot.css),
+        )
+        return snapshot
+
     def _build_node(self, depth: int, source: str) -> str:
         if self._repo is None:
             raise RuntimeError("GraphRepository is not initialized")
@@ -199,6 +217,8 @@ class DOMParser:
         self._depths_seen.append(depth)
         self._child_counts[node_id] = 0
 
+        dom_snapshot = self._capture_dom()
+
         overlay_path = self._screenshot_path(node_id, overlay=True)
         predictions = self.detector.predict_with_log(
             screenshot_path,
@@ -222,6 +242,8 @@ class DOMParser:
             screenshot_uri=screenshot_uri,
             overlay_uri=overlay_uri,
             created_at=datetime.now(timezone.utc).isoformat(),
+            skeleton=dom_snapshot.html if dom_snapshot else "",
+            styles=dom_snapshot.css if dom_snapshot else "",
         )
         self._repo.merge_state(state)
         logger.info("Persisted state %s to FalkorDB", node_id)

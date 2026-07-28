@@ -1,14 +1,87 @@
 from __future__ import annotations
 
+import logging
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple
 
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, Request, Response, sync_playwright
 
 from services.config import Config
 
+logger = logging.getLogger(__name__)
+
 Point = Tuple[float, float]
 NetworkLogEntry = Dict[str, Any]
+
+# Walks the CSSOM instead of the markup so that rules injected at runtime
+# (CSS-in-JS, adoptedStyleSheets) are captured alongside authored stylesheets.
+# Reading `cssRules` of a cross-origin sheet raises, so those hrefs are returned
+# for the caller to fetch over HTTP.
+_CSS_COLLECTOR_JS = """
+() => {
+    const blocks = [];
+    const unreachable = [];
+    const seenHrefs = new Set();
+
+    const collectSheet = (sheet, origin) => {
+        const href = sheet.href || null;
+        if (href) {
+            if (seenHrefs.has(href)) {
+                return;
+            }
+            seenHrefs.add(href);
+        }
+
+        let rules;
+        try {
+            rules = sheet.cssRules;
+        } catch (error) {
+            if (href) {
+                unreachable.push(href);
+            }
+            return;
+        }
+        if (!rules) {
+            return;
+        }
+
+        const parts = [];
+        const importedSheets = [];
+        for (const rule of Array.from(rules)) {
+            parts.push(rule.cssText);
+            if (rule.styleSheet) {
+                importedSheets.push(rule.styleSheet);
+            }
+        }
+        blocks.push({ source: href || origin, css: parts.join("\\n") });
+        for (const importedSheet of importedSheets) {
+            collectSheet(importedSheet, href || origin);
+        }
+    };
+
+    const collectAll = (sheets, origin) => {
+        for (const sheet of Array.from(sheets || [])) {
+            collectSheet(sheet, origin);
+        }
+    };
+
+    collectAll(document.styleSheets, "inline <style>");
+    collectAll(document.adoptedStyleSheets, "adoptedStyleSheets");
+
+    return { blocks, unreachable };
+}
+"""
+
+
+@dataclass(frozen=True)
+class DomSnapshot:
+    """Serialized HTML and CSS of one page state."""
+
+    html: str
+    css: str
+    url: str
+    captured_at_ms: int
 
 
 class PlaywrightUtils:
@@ -20,11 +93,13 @@ class PlaywrightUtils:
         slow_mo_ms: int = Config.slow_mo_ms,
         nav_timeout_ms: int = Config.nav_timeout_ms,
         network_idle_timeout_ms: int = Config.network_idle_timeout_ms,
+        style_fetch_timeout_ms: int = Config.dom_style_fetch_timeout_ms,
     ) -> None:
         self._headless = headless
         self._slow_mo_ms = slow_mo_ms
         self._nav_timeout_ms = nav_timeout_ms
         self._network_idle_timeout_ms = network_idle_timeout_ms
+        self._style_fetch_timeout_ms = style_fetch_timeout_ms
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
@@ -153,3 +228,57 @@ class PlaywrightUtils:
     def take_screenshot(self, path: str) -> str:
         self.page.screenshot(path=path, full_page=True)
         return path
+
+    @staticmethod
+    def _format_css_block(source: str, css: str) -> str:
+        if not css or not css.strip():
+            return ""
+        return f"/* source: {source} */\n{css.strip()}"
+
+    def _fetch_stylesheet(self, href: str) -> str | None:
+        """Fetch a stylesheet the CSSOM refused to expose, reusing page cookies."""
+        try:
+            response = self.page.request.get(href, timeout=self._style_fetch_timeout_ms)
+        except Exception:
+            logger.warning("Could not fetch stylesheet %s", href, exc_info=True)
+            return None
+        if not response.ok:
+            logger.warning("Stylesheet %s returned HTTP %s", href, response.status)
+            return None
+        try:
+            return response.text()
+        except Exception:
+            logger.warning("Could not decode stylesheet %s", href, exc_info=True)
+            return None
+
+    def _collect_css(self) -> str:
+        result = self.page.evaluate(_CSS_COLLECTOR_JS)
+        blocks = [
+            self._format_css_block(entry.get("source", "unknown"), entry.get("css", ""))
+            for entry in result.get("blocks", [])
+        ]
+        for href in result.get("unreachable", []):
+            fetched = self._fetch_stylesheet(href)
+            if fetched is not None:
+                blocks.append(self._format_css_block(href, fetched))
+        return "\n\n".join(block for block in blocks if block)
+
+    def capture_dom(self) -> DomSnapshot:
+        """
+        Record the current page's full HTML and CSS.
+
+        ``html`` is the serialized live DOM, so it reflects script-rendered
+        markup rather than the originally served response. ``css`` concatenates
+        every rule reachable through ``document.styleSheets`` and
+        ``document.adoptedStyleSheets`` (including ``@import``-ed sheets), with
+        cross-origin stylesheets fetched over HTTP because the CSSOM will not
+        expose their rules. Markup and styles inside shadow roots are not
+        serializable this way and are absent from both fields.
+        """
+        page = self.page
+        return DomSnapshot(
+            html=page.content(),
+            css=self._collect_css(),
+            url=page.url,
+            captured_at_ms=int(time.time() * 1000),
+        )

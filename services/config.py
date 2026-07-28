@@ -24,6 +24,8 @@ class Config:
     slow_mo_ms: int = int(os.getenv("SLOW_MO_MS", "400"))
     nav_timeout_ms: int = int(os.getenv("NAV_TIMEOUT_MS", "15000"))
     network_idle_timeout_ms: int = int(os.getenv("NETWORK_IDLE_TIMEOUT_MS", "5000"))
+    capture_dom: bool = _env_bool("CAPTURE_DOM", "true")
+    dom_style_fetch_timeout_ms: int = int(os.getenv("DOM_STYLE_FETCH_TIMEOUT_MS", "5000"))
 
     falkordb_url: str | None = _env_opt("FALKORDB_URL")
     falkordb_host: str = os.getenv("FALKORDB_HOST", "localhost")
